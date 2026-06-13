@@ -1,3 +1,5 @@
 pyTelegramBotAPI
 requests
 flask
+qrcode[pil]
+pillow
