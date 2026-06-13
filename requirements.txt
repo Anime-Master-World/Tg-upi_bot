@@ -1,5 +1,5 @@
-pyTelegramBotAPI==4.12.0
-Flask==3.0.0
-requests==2.31.0
-qrcode==7.4.2
-python-dateutil==2.9.0
+pyTelegramBotAPI
+Flask
+requests
+qrcode
+python-dateutil
