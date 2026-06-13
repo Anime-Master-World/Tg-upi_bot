@@ -871,3 +871,18 @@ def decline_payment(call):
         bot.answer_callback_query(call.id, "❌ Declined!")
     except Exception as e:
         print(f"DECLINE ERROR: {str(e)}")
+
+# ── KEEP ALIVE ────────────────────────────────────────────────
+def keep_alive():
+    while True:
+        time.sleep(600)
+        try:
+            requests.get("https://upi-tg-bot.onrender.com")
+        except:
+            pass
+
+threading.Thread(target=keep_alive, daemon=True).start()
+
+# ── STARTUP ───────────────────────────────────────────────────
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=7860)
