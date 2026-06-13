@@ -77,7 +77,15 @@ def get_current_time():
 
 # ── GROQ VISION API ENGINE ───────────────────────────────────
 def analyze_receipt_with_groq(image_bytes):
-    base64_image = base64.b64encode(image_bytes).decode('utf-8')
+    # 1. Compress and resize the image to prevent Groq 400 Payload Too Large errors
+    img = Image.open(io.BytesIO(image_bytes))
+    img = img.convert("RGB") # Drop alpha channels which cause API issues
+    img.thumbnail((1024, 1024)) # Scale down to a safe maximum size
+    
+    buffered = io.BytesIO()
+    img.save(buffered, format="JPEG", quality=80) # Compress slightly
+    base64_image = base64.b64encode(buffered.getvalue()).decode('utf-8')
+    
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
@@ -104,36 +112,27 @@ def analyze_receipt_with_groq(image_bytes):
                 ]
             }
         ],
-        "temperature": 0.1
+        "temperature": 0.1,
+        "max_tokens": 1024 # Forces Groq to allocate proper response space
     }
     
     response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=20)
-    response.raise_for_status()
     
+    # Debugging: Print exact rejection reason if it fails again
+    if response.status_code != 200:
+        print(f"🚨 Groq API Rejection: {response.text}", flush=True)
+        response.raise_for_status()
+        
     content = response.json()["choices"][0]["message"]["content"].strip()
     
+    # Strip markdown code blocks if the model ignores raw JSON instructions
     if content.startswith("```json"):
         content = content[7:-3]
     elif content.startswith("```"):
         content = content[3:-3]
         
     return json.loads(content.strip())
-
-def is_date_within_24h(scanned_date_str):
-    if not scanned_date_str:
-        return False, "No date detected by AI"
-    try:
-        found_date = date_parser.parse(str(scanned_date_str), fuzzy=True)
-        time_diff = datetime.now() - found_date
-        
-        if time_diff > timedelta(hours=24):
-            return False, f"Date older than 24 hours ({scanned_date_str})"
-        if time_diff < timedelta(hours=-24):
-            return False, f"Date is in the future ({scanned_date_str})"
-            
-        return True, "Date valid"
-    except Exception:
-        return False, f"Could not parse AI date format: {scanned_date_str}"
+    
 
 # ── COMMANDS & MENUS ─────────────────────────────────────────
 @bot.message_handler(commands=["start"])
