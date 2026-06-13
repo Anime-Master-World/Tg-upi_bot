@@ -9,11 +9,11 @@ logging.basicConfig(level=logging.DEBUG)
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 OWNER_CHAT_ID = os.environ["OWNER_CHAT_ID"]
-GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 PREMIUM_CHANNEL_ID = os.environ.get("PREMIUM_CHANNEL_ID", "")
 
-YOUR_UPI_ID = "nitheshkumar05@fam"
-VERIFIED_UPI_IDS = ["nitheshkumar05@fam"]
+YOUR_UPI_ID = "veerakumarchellaiyan125-1@okaxis"
+VERIFIED_UPI_IDS = ["nitheshkumar05@fam", "veerakumarchellaiyan125-1@okaxis"]
 VERIFIED_NAMES = ["nitheshkumar", "nithesh kumar", "nithesh"]
 
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -92,8 +92,8 @@ def handle_plan_selection(call):
         amount = plan["amount"]
         pending_payments[user_id] = {"amount": amount, "plan": plan["label"]}
 
-        # Generate UPI QR code
-        upi_url = f"upi://pay?pa={YOUR_UPI_ID}&pn=NitheshKumar&am={amount}&cu=INR&tn=PremiumPayment"
+        # Generate UPI QR code (UPI ID hidden from user)
+        upi_url = f"upi://pay?pa={YOUR_UPI_ID}&pn=PremiumBot&am={amount}&cu=INR&tn=PremiumPayment"
 
         qr = qrcode.QRCode(version=1, box_size=10, border=4)
         qr.add_data(upi_url)
@@ -107,7 +107,6 @@ def handle_plan_selection(call):
         bot.send_message(call.message.chat.id,
             f"💳 *{plan['label']}*\n"
             f"Amount: *₹{amount}*\n\n"
-            f"📲 UPI ID: `{YOUR_UPI_ID}`\n\n"
             f"1️⃣ Scan the QR code below\n"
             f"2️⃣ Pay exactly *₹{amount}*\n"
             f"3️⃣ Send the *payment screenshot* here\n\n"
@@ -122,6 +121,73 @@ def handle_plan_selection(call):
     except Exception as e:
         print(f"PLAN SELECT ERROR: {str(e)}")
         bot.send_message(call.message.chat.id, f"❌ Error: {str(e)}")
+
+# ── SCAN SCREENSHOT WITH GROQ ─────────────────────────────────
+def scan_with_groq(img_base64, mime_type):
+    response = requests.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        },
+        json={
+            "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{mime_type};base64,{img_base64}"
+                            }
+                        },
+                        {
+                            "type": "text",
+                            "text": """Look at this image carefully.
+
+If this is a UPI payment screenshot, extract and return ONLY this JSON:
+{
+  "is_payment_screenshot": true,
+  "transaction_id": "the transaction/UTR/reference ID",
+  "amount": "amount as number only",
+  "recipient": "recipient name or UPI ID",
+  "status": "SUCCESS or FAILED or UNKNOWN"
+}
+
+If this is NOT a payment screenshot return ONLY this JSON:
+{
+  "is_payment_screenshot": false,
+  "transaction_id": null,
+  "amount": null,
+  "recipient": null,
+  "status": null
+}
+
+Rules:
+- Return ONLY raw JSON
+- No markdown, no backticks, no explanation"""
+                        }
+                    ]
+                }
+            ],
+            "temperature": 0,
+            "max_tokens": 256
+        },
+        timeout=30
+    )
+
+    result = response.json()
+    print(f"GROQ FULL RESPONSE: {result}")
+
+    if "error" in result:
+        raise Exception(f"Groq error: {result['error'].get('message', 'Unknown error')}")
+
+    raw_text = result["choices"][0]["message"]["content"].strip()
+    print(f"GROQ RAW TEXT: {raw_text}")
+
+    clean_text = raw_text.replace("```json", "").replace("```", "").strip()
+    return json.loads(clean_text)
 
 # ── USER SENDS SCREENSHOT ─────────────────────────────────────
 @bot.message_handler(content_types=["photo"])
@@ -142,7 +208,6 @@ def handle_screenshot(message):
         img_response = requests.get(file_url, timeout=10)
         img_base64 = base64.b64encode(img_response.content).decode("utf-8")
 
-        # Detect image type
         content_type = img_response.headers.get("Content-Type", "image/jpeg")
         if "png" in content_type:
             mime_type = "image/png"
@@ -151,77 +216,7 @@ def handle_screenshot(message):
         else:
             mime_type = "image/jpeg"
 
-        gemini_response = requests.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}",
-            headers={"Content-Type": "application/json"},
-            json={
-                "contents": [{
-                    "parts": [
-                        {
-                            "inline_data": {
-                                "mime_type": mime_type,
-                                "data": img_base64
-                            }
-                        },
-                        {
-                            "text": """Look at this image carefully.
-
-If this is a UPI payment screenshot, extract these fields and return as JSON:
-{
-  "is_payment_screenshot": true,
-  "transaction_id": "the transaction/UTR/reference ID",
-  "amount": "amount paid as number only",
-  "recipient": "who the money was sent to (name or UPI ID)",
-  "status": "SUCCESS or FAILED or UNKNOWN"
-}
-
-If this is NOT a payment screenshot (selfie, meme, document, etc), return:
-{
-  "is_payment_screenshot": false,
-  "transaction_id": null,
-  "amount": null,
-  "recipient": null,
-  "status": null
-}
-
-Rules:
-- Return ONLY raw JSON
-- No markdown
-- No backticks
-- No explanation
-- No extra text"""
-                        }
-                    ]
-                }],
-                "generationConfig": {
-                    "temperature": 0,
-                    "maxOutputTokens": 256
-                }
-            },
-            timeout=30
-        )
-
-        result = gemini_response.json()
-        print(f"GEMINI FULL RESPONSE: {result}")
-
-        # Handle Gemini errors
-        if "error" in result:
-            error_msg = result["error"].get("message", "Unknown Gemini error")
-            raise Exception(f"Gemini API error: {error_msg}")
-
-        if "candidates" not in result or not result["candidates"]:
-            raise Exception("Gemini returned no candidates — image may be blocked or unclear")
-
-        raw_text = result["candidates"][0]["content"]["parts"][0]["text"].strip()
-        print(f"GEMINI RAW TEXT: {raw_text}")
-
-        # Clean response
-        clean_text = raw_text.replace("```json", "").replace("```", "").strip()
-
-        try:
-            data = json.loads(clean_text)
-        except json.JSONDecodeError:
-            raise Exception(f"Could not parse Gemini response: {clean_text}")
+        data = scan_with_groq(img_base64, mime_type)
 
         if not data.get("is_payment_screenshot"):
             bot.reply_to(message,
@@ -254,13 +249,11 @@ Rules:
             f"📋 *Transaction Details:*\n"
             f"• Transaction ID: `{txn_id}`\n"
             f"• Amount Paid: ₹{amount_paid}\n"
-            f"• Paid To: {recipient}\n"
             f"• Status: {status}\n\n"
             f"⏳ Processing your payment...",
             parse_mode="Markdown"
         )
 
-        # Save review data
         review_key = str(uuid.uuid4())[:8]
         pending_reviews[review_key] = {
             "user_id": user_id,
@@ -279,7 +272,6 @@ Rules:
         if auto_verified and status == "SUCCESS":
             grant_premium(user_id, plan_label, review_key)
 
-            # Also notify owner silently
             bot.send_photo(
                 OWNER_CHAT_ID,
                 photo.file_id,
@@ -297,7 +289,6 @@ Rules:
             )
 
         else:
-            # Send to owner for manual review
             markup = types.InlineKeyboardMarkup()
             markup.row(
                 types.InlineKeyboardButton("✅ Approve", callback_data=f"approve_{review_key}"),
@@ -362,8 +353,7 @@ def grant_premium(user_id, plan, review_key):
         msg += "\nThank you for your purchase! 🙏"
 
         bot.send_message(user_id, msg, parse_mode="Markdown")
-
-        review = pending_reviews.pop(review_key, {})
+        pending_reviews.pop(review_key, None)
         pending_payments.pop(user_id, None)
 
     except Exception as e:
