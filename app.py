@@ -485,4 +485,389 @@ def handle_owner_input(message):
             return
         if plan_key in plans:
             plans[plan_key]["amount"] = int(text)
-            del owner_stat
+            del owner_states[message.from_user.id]
+            bot.send_message(message.chat.id,
+                f"✅ Amount updated to: *₹{text}*", parse_mode="Markdown")
+
+    elif action == "edit_deliv":
+        plan_key = state["plan_key"]
+        keys = [k.strip() for k in text.split(",")]
+        valid = [k for k in keys if k in deliverable_types]
+        if not valid:
+            bot.send_message(message.chat.id, "❌ No valid keys found.")
+            return
+        if plan_key in plans:
+            plans[plan_key]["deliverables"] = valid
+            del owner_states[message.from_user.id]
+            items = "\n".join([f"  • {deliverable_types[d]}" for d in valid])
+            bot.send_message(message.chat.id,
+                f"✅ Deliverables updated:\n{items}", parse_mode="Markdown")
+
+    elif action == "add_deliv_type":
+        step = state.get("step")
+        if step == "key":
+            key = text.replace(" ", "_").lower()
+            state["step"] = "label"
+            state["deliv_key"] = key
+            bot.send_message(message.chat.id,
+                f"✅ Key: `{key}`\n\nStep 2: Enter the description:",
+                parse_mode="Markdown"
+            )
+        elif step == "label":
+            key = state["deliv_key"]
+            deliverable_types[key] = text
+            del owner_states[message.from_user.id]
+            bot.send_message(message.chat.id,
+                f"✅ *Deliverable Added!*\n\n`{key}` — {text}",
+                parse_mode="Markdown")
+
+# ══════════════════════════════════════════════════════════════
+# SCREENSHOT SCANNING
+# ══════════════════════════════════════════════════════════════
+def scan_with_groq(img_base64, mime_type):
+    ist = timezone(timedelta(hours=5, minutes=30))
+    current_time = datetime.now(ist).strftime("%d %b %Y %I:%M %p IST")
+
+    response = requests.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        },
+        json={
+            "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime_type};base64,{img_base64}"}
+                    },
+                    {
+                        "type": "text",
+                        "text": f"""Current date and time is: {current_time}
+
+Analyze this image carefully. Your job is to:
+1. Detect if this is a real UPI payment screenshot
+2. Extract payment details
+3. Check if payment was made within the last 24 hours
+4. Detect if screenshot looks fake, edited, or manipulated
+
+Return ONLY this JSON:
+{{
+  "is_payment_screenshot": true or false,
+  "is_fake": true or false,
+  "fake_reason": "reason if fake else null",
+  "transaction_id": "UTR/transaction ID or null",
+  "amount": "amount as number only or null",
+  "recipient": "recipient name or UPI ID or null",
+  "status": "SUCCESS or FAILED or UNKNOWN",
+  "payment_date": "date from screenshot or null",
+  "payment_time": "time from screenshot or null",
+  "within_24_hours": true or false or null
+}}
+
+Fake detection rules:
+- Check for mismatched fonts, blur, pixelation around numbers
+- Check if logo or bank name looks genuine
+- Check if amounts or dates look edited
+- If payment date is more than 24 hours ago mark within_24_hours as false
+
+Return ONLY raw JSON. No markdown, no backticks, no explanation."""
+                    }
+                ]
+            }],
+            "temperature": 0,
+            "max_tokens": 512
+        },
+        timeout=30
+    )
+
+    result = response.json()
+    print(f"GROQ FULL RESPONSE: {result}")
+
+    if "error" in result:
+        raise Exception(f"Groq error: {result['error'].get('message', 'Unknown')}")
+    if "choices" not in result or not result["choices"]:
+        raise Exception("Groq returned no choices")
+
+    raw_text = result["choices"][0]["message"]["content"].strip()
+    print(f"GROQ RAW TEXT: {raw_text}")
+    clean_text = raw_text.replace("```json", "").replace("```", "").strip()
+    return json.loads(clean_text)
+
+# ── USER SENDS SCREENSHOT ─────────────────────────────────────
+@bot.message_handler(content_types=["photo"])
+def handle_screenshot(message):
+    try:
+        user_id = message.from_user.id
+
+        if user_id not in pending_payments:
+            bot.reply_to(message, "⚠️ No pending payment. Use /start to begin.")
+            return
+
+        bot.reply_to(message, "🔍 Scanning your payment screenshot...")
+
+        photo = message.photo[-1]
+        file_info = bot.get_file(photo.file_id)
+        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
+        img_response = requests.get(file_url, timeout=10)
+        img_base64 = base64.b64encode(img_response.content).decode("utf-8")
+
+        content_type = img_response.headers.get("Content-Type", "image/jpeg")
+        if "png" in content_type:
+            mime_type = "image/png"
+        elif "webp" in content_type:
+            mime_type = "image/webp"
+        else:
+            mime_type = "image/jpeg"
+
+        data = scan_with_groq(img_base64, mime_type)
+
+        # ── NOT A PAYMENT SCREENSHOT ──────────────────────────
+        if not data.get("is_payment_screenshot"):
+            bot.reply_to(message,
+                "❌ *This doesn't look like a payment screenshot.*\n\n"
+                "Please send a valid UPI payment screenshot showing:\n"
+                "• Transaction ID / UTR number\n"
+                "• Amount paid\n"
+                "• Recipient name or UPI ID\n"
+                "• Payment status",
+                parse_mode="Markdown"
+            )
+            return
+
+        # ── FAKE DETECTION ────────────────────────────────────
+        if data.get("is_fake"):
+            fake_reason = data.get("fake_reason", "Screenshot appears manipulated")
+            bot.reply_to(message,
+                f"🚨 *Fake Payment Detected!*\n\n"
+                f"Reason: {fake_reason}\n\n"
+                f"Please send a genuine payment screenshot.",
+                parse_mode="Markdown"
+            )
+            bot.send_message(OWNER_CHAT_ID,
+                f"🚨 *Fake Payment Attempt!*\n\n"
+                f"👤 User: {message.from_user.first_name} (@{message.from_user.username or 'N/A'})\n"
+                f"🕐 Time: {now_ist()}\n"
+                f"⚠️ Reason: {fake_reason}",
+                parse_mode="Markdown"
+            )
+            return
+
+        # ── 24 HOUR CHECK ─────────────────────────────────────
+        if data.get("within_24_hours") == False:
+            bot.reply_to(message,
+                "⏰ *Payment screenshot is older than 24 hours.*\n\n"
+                "Please make a fresh payment and send the new screenshot.",
+                parse_mode="Markdown"
+            )
+            return
+
+        txn_id      = data.get("transaction_id", "N/A")
+        amount_paid = str(data.get("amount", "N/A"))
+        recipient   = str(data.get("recipient", "N/A")).strip()
+        status      = data.get("status", "UNKNOWN")
+        pay_date    = data.get("payment_date", "N/A")
+        pay_time    = data.get("payment_time", "N/A")
+        expected    = pending_payments[user_id]["amount"]
+        plan_label  = pending_payments[user_id]["plan"]
+        plan_key    = pending_payments[user_id]["plan_key"]
+        submitted_at = now_ist()
+
+        # ── VERIFY RECIPIENT ──────────────────────────────────
+        recipient_lower = recipient.lower()
+        upi_match  = any(u.lower() in recipient_lower for u in VERIFIED_UPI_IDS)
+        name_match = any(n.lower() in recipient_lower for n in VERIFIED_NAMES)
+
+        # ── VERIFY EXACT AMOUNT ───────────────────────────────
+        try:
+            paid = float(str(amount_paid).replace(",", "").strip())
+            expected_float = float(str(expected))
+            amount_match = abs(paid - expected_float) < 0.01
+        except:
+            amount_match = False
+
+        # ── AUTO APPROVE ONLY IF ALL 3 MATCH ─────────────────
+        auto_verified = (upi_match or name_match) and status == "SUCCESS" and amount_match
+
+        # Show details to user
+        bot.reply_to(message,
+            f"✅ *Screenshot Scanned!*\n\n"
+            f"📋 *Transaction Details:*\n"
+            f"• Transaction ID: `{txn_id}`\n"
+            f"• Amount Paid: ₹{amount_paid}\n"
+            f"• Status: {status}\n"
+            f"• Payment Date: {pay_date}\n"
+            f"• Payment Time: {pay_time}\n\n"
+            f"⏳ Processing your order...",
+            parse_mode="Markdown"
+        )
+
+        review_key = str(uuid.uuid4())[:8]
+        pending_reviews[review_key] = {
+            "user_id":      user_id,
+            "user_name":    message.from_user.first_name,
+            "username":     message.from_user.username or "N/A",
+            "amount_paid":  amount_paid,
+            "expected":     expected,
+            "txn_id":       txn_id,
+            "recipient":    recipient,
+            "status":       status,
+            "pay_date":     pay_date,
+            "pay_time":     pay_time,
+            "plan":         plan_label,
+            "plan_key":     plan_key,
+            "submitted_at": submitted_at,
+            "file_id":      photo.file_id
+        }
+
+        owner_caption = (
+            f"🔔 *New Payment — {'✅ Auto Approved' if auto_verified else '⚠️ Manual Review'}*\n\n"
+            f"👤 User: {message.from_user.first_name} (@{message.from_user.username or 'N/A'})\n"
+            f"📦 Plan: {plan_label}\n"
+            f"💰 Expected: ₹{expected}\n"
+            f"💸 Paid: ₹{amount_paid}\n"
+            f"🏦 Paid To: {recipient}\n"
+            f"🔖 Txn ID: `{txn_id}`\n"
+            f"📊 Status: {status}\n"
+            f"📅 Payment Date: {pay_date}\n"
+            f"🕐 Payment Time: {pay_time}\n"
+            f"🕐 Submitted At: {submitted_at}\n"
+            f"🔑 Key: `{review_key}`"
+        )
+
+        if auto_verified:
+            grant_premium(user_id, plan_label, plan_key, review_key)
+            bot.send_photo(OWNER_CHAT_ID, photo.file_id,
+                caption=owner_caption, parse_mode="Markdown")
+        else:
+            # Build reason
+            if not (upi_match or name_match):
+                reason = "Recipient not verified"
+            elif not amount_match:
+                reason = f"Amount mismatch — Expected ₹{expected}, Paid ₹{amount_paid}"
+            elif status != "SUCCESS":
+                reason = f"Payment status: {status}"
+            else:
+                reason = "Manual review required"
+
+            markup = types.InlineKeyboardMarkup()
+            markup.row(
+                types.InlineKeyboardButton("✅ Approve", callback_data=f"approve_{review_key}"),
+                types.InlineKeyboardButton("❌ Decline", callback_data=f"decline_{review_key}")
+            )
+            bot.send_photo(OWNER_CHAT_ID, photo.file_id,
+                caption=f"{owner_caption}\n⚠️ Reason: {reason}",
+                parse_mode="Markdown", reply_markup=markup)
+            bot.send_message(user_id,
+                "⏳ *Your order is under review.*\n\nWe'll confirm shortly.",
+                parse_mode="Markdown")
+
+    except Exception as e:
+        print(f"SCREENSHOT ERROR: {str(e)}")
+        bot.reply_to(message, f"❌ Error scanning screenshot: {str(e)}")
+
+# ── NON-PHOTO ─────────────────────────────────────────────────
+@bot.message_handler(content_types=["document", "video", "audio", "sticker", "voice"])
+def handle_non_photo(message):
+    try:
+        if message.from_user.id in pending_payments:
+            bot.reply_to(message,
+                "⚠️ Please send a *payment screenshot* (image only).",
+                parse_mode="Markdown")
+    except Exception as e:
+        print(f"NON PHOTO ERROR: {str(e)}")
+
+# ── GRANT ACCESS ──────────────────────────────────────────────
+def grant_premium(user_id, plan_label, plan_key, review_key):
+    try:
+        plan = plans.get(plan_key, {})
+        deliverables = plan.get("deliverables", [])
+        msg = f"🎉 *Order Confirmed! Thank you!*\n\n📦 Plan: {plan_label}\n\n"
+
+        for item in deliverables:
+            if item == "private_channel" and PREMIUM_CHANNEL_ID:
+                try:
+                    link_obj = bot.create_chat_invite_link(
+                        PREMIUM_CHANNEL_ID,
+                        member_limit=1,
+                        expire_date=int(time.time()) + 30 * 24 * 3600
+                    )
+                    msg += f"📢 *Private Channel:* {link_obj.invite_link}\n"
+                except Exception as e:
+                    msg += f"📢 Channel link error: {str(e)}\n"
+            elif item == "access_token":
+                token = str(uuid.uuid4()).replace("-", "")[:16].upper()
+                msg += f"🔑 *Access Token:* `{token}`\n"
+            elif item == "vip_badge":
+                msg += f"👑 *VIP Badge* activated on your account.\n"
+            elif item == "bonus_content":
+                msg += f"🎁 *Bonus Content* is now unlocked.\n"
+            else:
+                label = deliverable_types.get(item, item)
+                msg += f"✅ {label} — delivered.\n"
+
+        msg += "\n🙏 Thank you for your purchase!"
+        bot.send_message(user_id, msg, parse_mode="Markdown")
+        pending_reviews.pop(review_key, None)
+        pending_payments.pop(user_id, None)
+
+    except Exception as e:
+        print(f"GRANT ERROR: {str(e)}")
+
+# ── APPROVE ───────────────────────────────────────────────────
+@bot.callback_query_handler(func=lambda c: c.data.startswith("approve_"))
+def approve_payment(call):
+    try:
+        if not is_owner(call.message.chat.id):
+            bot.answer_callback_query(call.id, "⛔ Not authorized.")
+            return
+        review_key = call.data.replace("approve_", "")
+        review = pending_reviews.get(review_key)
+        if not review:
+            bot.answer_callback_query(call.id, "⚠️ Already processed.")
+            return
+        grant_premium(review["user_id"], review["plan"], review["plan_key"], review_key)
+        bot.edit_message_caption(
+            f"✅ *APPROVED at {now_ist()}*\n\n" + call.message.caption,
+            call.message.chat.id, call.message.message_id,
+            parse_mode="Markdown"
+        )
+        bot.answer_callback_query(call.id, "✅ Approved!")
+    except Exception as e:
+        print(f"APPROVE ERROR: {str(e)}")
+
+# ── DECLINE ───────────────────────────────────────────────────
+@bot.callback_query_handler(func=lambda c: c.data.startswith("decline_"))
+def decline_payment(call):
+    try:
+        if not is_owner(call.message.chat.id):
+            bot.answer_callback_query(call.id, "⛔ Not authorized.")
+            return
+        review_key = call.data.replace("decline_", "")
+        review = pending_reviews.get(review_key)
+        if not review:
+            bot.answer_callback_query(call.id, "⚠️ Already processed.")
+            return
+        user_id = review["user_id"]
+        bot.send_message(user_id,
+            "❌ *Order Not Confirmed*\n\n"
+            "Your payment could not be verified.\n\n"
+            "Possible reasons:\n"
+            "• Amount paid does not match\n"
+            "• Payment sent to wrong UPI ID\n"
+            "• Screenshot is unclear\n\n"
+            "Please try /start again or contact support.",
+            parse_mode="Markdown"
+        )
+        bot.edit_message_caption(
+            f"❌ *DECLINED at {now_ist()}*\n\n" + call.message.caption,
+            call.message.chat.id, call.message.message_id,
+            parse_mode="Markdown"
+        )
+        pending_reviews.pop(review_key, None)
+        pending_payments.pop(user_id, None)
+        bot.answer_callback_query(call.id, "❌ Declined!")
+    except Exception as e:
+        print(f"DECLINE ERROR: {str(e)}")
