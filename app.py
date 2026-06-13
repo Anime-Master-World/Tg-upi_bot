@@ -1,7 +1,9 @@
 import os, requests, threading, time, uuid, base64, json, logging
 from flask import Flask, request as freq
+from io import BytesIO
 import telebot
 from telebot import types
+import qrcode
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -11,6 +13,8 @@ GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 PREMIUM_CHANNEL_ID = os.environ.get("PREMIUM_CHANNEL_ID", "")
 
 YOUR_UPI_ID = "veerakumarchellaiyan125-1@okaxis"
+VERIFIED_UPI_IDS = ["nitheshkumar05@fam", "veerakumarchellaiyan125-1@okaxis"]
+VERIFIED_NAMES = ["nitheshkumar", "nithesh kumar", "nithesh"]
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
@@ -45,7 +49,9 @@ def help_cmd(message):
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("⭐ Get Premium", callback_data="show_plans"))
         bot.reply_to(message,
-            "👋 Welcome!\n\nGet *Premium Access* to unlock all features.",
+            "👋 *Welcome to Premium Bot!*\n\n"
+            "Get *Premium Access* to unlock all features.\n"
+            "Tap below to get started!",
             parse_mode="Markdown",
             reply_markup=markup
         )
@@ -63,15 +69,16 @@ def show_plans(call):
                 callback_data=f"buy_{key}"
             ))
         bot.edit_message_text(
-            "🎯 Choose your plan:",
+            "🎯 *Choose your plan:*",
             call.message.chat.id,
             call.message.message_id,
+            parse_mode="Markdown",
             reply_markup=markup
         )
     except Exception as e:
         print(f"PLANS ERROR: {str(e)}")
 
-# ── USER SELECTS PLAN → SHOW UPI ─────────────────────────────
+# ── USER SELECTS PLAN → GENERATE QR ──────────────────────────
 @bot.callback_query_handler(func=lambda c: c.data.startswith("buy_"))
 def handle_plan_selection(call):
     try:
@@ -85,14 +92,31 @@ def handle_plan_selection(call):
         amount = plan["amount"]
         pending_payments[user_id] = {"amount": amount, "plan": plan["label"]}
 
+        # Generate UPI QR code
+        upi_url = f"upi://pay?pa={YOUR_UPI_ID}&pn=NitheshKumar&am={amount}&cu=INR&tn=PremiumPayment"
+
+        qr = qrcode.QRCode(version=1, box_size=10, border=4)
+        qr.add_data(upi_url)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+
+        bio = BytesIO()
+        img.save(bio, format="PNG")
+        bio.seek(0)
+
         bot.send_message(call.message.chat.id,
             f"💳 *{plan['label']}*\n"
             f"Amount: *₹{amount}*\n\n"
-            f"Send payment to:\n"
             f"📲 UPI ID: `{YOUR_UPI_ID}`\n\n"
-            f"✅ After paying, send the *payment screenshot* here.\n"
-            f"⚠️ Make sure to pay exactly ₹{amount}",
+            f"1️⃣ Scan the QR code below\n"
+            f"2️⃣ Pay exactly *₹{amount}*\n"
+            f"3️⃣ Send the *payment screenshot* here\n\n"
+            f"⚠️ Do not change the amount",
             parse_mode="Markdown"
+        )
+
+        bot.send_photo(call.message.chat.id, bio,
+            caption=f"📲 Scan & pay ₹{amount} via GPay / PhonePe / Paytm"
         )
 
     except Exception as e:
@@ -118,6 +142,15 @@ def handle_screenshot(message):
         img_response = requests.get(file_url, timeout=10)
         img_base64 = base64.b64encode(img_response.content).decode("utf-8")
 
+        # Detect image type
+        content_type = img_response.headers.get("Content-Type", "image/jpeg")
+        if "png" in content_type:
+            mime_type = "image/png"
+        elif "webp" in content_type:
+            mime_type = "image/webp"
+        else:
+            mime_type = "image/jpeg"
+
         gemini_response = requests.post(
             f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}",
             headers={"Content-Type": "application/json"},
@@ -126,48 +159,96 @@ def handle_screenshot(message):
                     "parts": [
                         {
                             "inline_data": {
-                                "mime_type": "image/jpeg",
+                                "mime_type": mime_type,
                                 "data": img_base64
                             }
                         },
                         {
-                            "text": """Analyze this image. Extract ONLY these fields as JSON:
+                            "text": """Look at this image carefully.
+
+If this is a UPI payment screenshot, extract these fields and return as JSON:
 {
-  "is_payment_screenshot": true or false,
-  "transaction_id": "...",
-  "amount": "...",
-  "recipient": "...",
+  "is_payment_screenshot": true,
+  "transaction_id": "the transaction/UTR/reference ID",
+  "amount": "amount paid as number only",
+  "recipient": "who the money was sent to (name or UPI ID)",
   "status": "SUCCESS or FAILED or UNKNOWN"
 }
-If this is NOT a payment screenshot return is_payment_screenshot as false and all other fields as null.
-Return ONLY raw JSON. No markdown, no backticks, no explanation."""
+
+If this is NOT a payment screenshot (selfie, meme, document, etc), return:
+{
+  "is_payment_screenshot": false,
+  "transaction_id": null,
+  "amount": null,
+  "recipient": null,
+  "status": null
+}
+
+Rules:
+- Return ONLY raw JSON
+- No markdown
+- No backticks
+- No explanation
+- No extra text"""
                         }
                     ]
-                }]
+                }],
+                "generationConfig": {
+                    "temperature": 0,
+                    "maxOutputTokens": 256
+                }
             },
             timeout=30
         )
 
         result = gemini_response.json()
-        print(f"GEMINI RESPONSE: {result}")
-        text = result["candidates"][0]["content"]["parts"][0]["text"].strip()
-        text = text.replace("```json", "").replace("```", "").strip()
-        data = json.loads(text)
+        print(f"GEMINI FULL RESPONSE: {result}")
+
+        # Handle Gemini errors
+        if "error" in result:
+            error_msg = result["error"].get("message", "Unknown Gemini error")
+            raise Exception(f"Gemini API error: {error_msg}")
+
+        if "candidates" not in result or not result["candidates"]:
+            raise Exception("Gemini returned no candidates — image may be blocked or unclear")
+
+        raw_text = result["candidates"][0]["content"]["parts"][0]["text"].strip()
+        print(f"GEMINI RAW TEXT: {raw_text}")
+
+        # Clean response
+        clean_text = raw_text.replace("```json", "").replace("```", "").strip()
+
+        try:
+            data = json.loads(clean_text)
+        except json.JSONDecodeError:
+            raise Exception(f"Could not parse Gemini response: {clean_text}")
 
         if not data.get("is_payment_screenshot"):
             bot.reply_to(message,
-                "❌ This doesn't look like a payment screenshot.\n"
-                "Please send a valid UPI payment screenshot."
+                "❌ *This doesn't look like a payment screenshot.*\n\n"
+                "Please send a valid UPI payment screenshot showing:\n"
+                "• Transaction ID / UTR number\n"
+                "• Amount paid\n"
+                "• Recipient name or UPI ID\n"
+                "• Payment status",
+                parse_mode="Markdown"
             )
             return
 
         txn_id = data.get("transaction_id", "N/A")
-        amount_paid = data.get("amount", "N/A")
-        recipient = data.get("recipient", "N/A")
+        amount_paid = str(data.get("amount", "N/A"))
+        recipient = str(data.get("recipient", "N/A")).strip()
         status = data.get("status", "UNKNOWN")
         expected = pending_payments[user_id]["amount"]
         plan_label = pending_payments[user_id]["plan"]
 
+        # ── AUTO VERIFY RECIPIENT ─────────────────────────────
+        recipient_lower = recipient.lower()
+        upi_match = any(upi.lower() in recipient_lower for upi in VERIFIED_UPI_IDS)
+        name_match = any(name.lower() in recipient_lower for name in VERIFIED_NAMES)
+        auto_verified = upi_match or name_match
+
+        # Show scanned details to user
         bot.reply_to(message,
             f"✅ *Screenshot Scanned Successfully!*\n\n"
             f"📋 *Transaction Details:*\n"
@@ -175,10 +256,11 @@ Return ONLY raw JSON. No markdown, no backticks, no explanation."""
             f"• Amount Paid: ₹{amount_paid}\n"
             f"• Paid To: {recipient}\n"
             f"• Status: {status}\n\n"
-            f"⏳ Waiting for owner approval...",
+            f"⏳ Processing your payment...",
             parse_mode="Markdown"
         )
 
+        # Save review data
         review_key = str(uuid.uuid4())[:8]
         pending_reviews[review_key] = {
             "user_id": user_id,
@@ -193,33 +275,99 @@ Return ONLY raw JSON. No markdown, no backticks, no explanation."""
             "file_id": photo.file_id
         }
 
-        markup = types.InlineKeyboardMarkup()
-        markup.row(
-            types.InlineKeyboardButton("✅ Approve", callback_data=f"approve_{review_key}"),
-            types.InlineKeyboardButton("❌ Decline", callback_data=f"decline_{review_key}")
-        )
+        # ── AUTO APPROVE IF VERIFIED ──────────────────────────
+        if auto_verified and status == "SUCCESS":
+            grant_premium(user_id, plan_label, review_key)
 
-        bot.send_photo(
-            OWNER_CHAT_ID,
-            photo.file_id,
-            caption=(
-                f"🔔 *New Payment Review*\n\n"
-                f"👤 User: {message.from_user.first_name} (@{message.from_user.username or 'N/A'})\n"
-                f"📦 Plan: {plan_label}\n"
-                f"💰 Expected: ₹{expected}\n"
-                f"💸 Paid: ₹{amount_paid}\n"
-                f"🏦 Paid To: {recipient}\n"
-                f"🔖 Txn ID: `{txn_id}`\n"
-                f"📊 Status: {status}\n"
-                f"🔑 Key: `{review_key}`"
-            ),
-            parse_mode="Markdown",
-            reply_markup=markup
-        )
+            # Also notify owner silently
+            bot.send_photo(
+                OWNER_CHAT_ID,
+                photo.file_id,
+                caption=(
+                    f"✅ *AUTO APPROVED*\n\n"
+                    f"👤 User: {message.from_user.first_name} (@{message.from_user.username or 'N/A'})\n"
+                    f"📦 Plan: {plan_label}\n"
+                    f"💰 Expected: ₹{expected}\n"
+                    f"💸 Paid: ₹{amount_paid}\n"
+                    f"🏦 Paid To: {recipient}\n"
+                    f"🔖 Txn ID: `{txn_id}`\n"
+                    f"📊 Status: {status}"
+                ),
+                parse_mode="Markdown"
+            )
+
+        else:
+            # Send to owner for manual review
+            markup = types.InlineKeyboardMarkup()
+            markup.row(
+                types.InlineKeyboardButton("✅ Approve", callback_data=f"approve_{review_key}"),
+                types.InlineKeyboardButton("❌ Decline", callback_data=f"decline_{review_key}")
+            )
+
+            reason = "Recipient not verified" if not auto_verified else f"Status: {status}"
+
+            bot.send_photo(
+                OWNER_CHAT_ID,
+                photo.file_id,
+                caption=(
+                    f"🔔 *Manual Review Required*\n"
+                    f"⚠️ Reason: {reason}\n\n"
+                    f"👤 User: {message.from_user.first_name} (@{message.from_user.username or 'N/A'})\n"
+                    f"📦 Plan: {plan_label}\n"
+                    f"💰 Expected: ₹{expected}\n"
+                    f"💸 Paid: ₹{amount_paid}\n"
+                    f"🏦 Paid To: {recipient}\n"
+                    f"🔖 Txn ID: `{txn_id}`\n"
+                    f"📊 Status: {status}\n"
+                    f"🔑 Key: `{review_key}`"
+                ),
+                parse_mode="Markdown",
+                reply_markup=markup
+            )
+
+            bot.send_message(user_id,
+                "⏳ *Your payment is under review.*\n\n"
+                "Our team will verify and grant access shortly.",
+                parse_mode="Markdown"
+            )
 
     except Exception as e:
         print(f"SCREENSHOT ERROR: {str(e)}")
         bot.reply_to(message, f"❌ Error: {str(e)}")
+
+# ── GRANT PREMIUM ACCESS ──────────────────────────────────────
+def grant_premium(user_id, plan, review_key):
+    try:
+        access_token = str(uuid.uuid4()).replace("-", "")[:16].upper()
+
+        invite_link = ""
+        if PREMIUM_CHANNEL_ID:
+            try:
+                link_obj = bot.create_chat_invite_link(
+                    PREMIUM_CHANNEL_ID,
+                    member_limit=1,
+                    expire_date=int(time.time()) + 30 * 24 * 3600
+                )
+                invite_link = link_obj.invite_link
+            except Exception as e:
+                invite_link = f"Could not generate: {str(e)}"
+
+        msg = (
+            f"🎉 *Payment Approved! Welcome to Premium!*\n\n"
+            f"📦 Plan: {plan}\n"
+            f"🔑 Access Token: `{access_token}`\n"
+        )
+        if invite_link:
+            msg += f"📲 Join Here: {invite_link}\n"
+        msg += "\nThank you for your purchase! 🙏"
+
+        bot.send_message(user_id, msg, parse_mode="Markdown")
+
+        review = pending_reviews.pop(review_key, {})
+        pending_payments.pop(user_id, None)
+
+    except Exception as e:
+        print(f"GRANT PREMIUM ERROR: {str(e)}")
 
 # ── NON-PHOTO DURING PENDING ──────────────────────────────────
 @bot.message_handler(content_types=["document", "video", "audio", "sticker", "voice"])
@@ -252,39 +400,15 @@ def approve_payment(call):
 
         user_id = review["user_id"]
         plan = review["plan"]
-        access_token = str(uuid.uuid4()).replace("-", "")[:16].upper()
 
-        invite_link = ""
-        if PREMIUM_CHANNEL_ID:
-            try:
-                link_obj = bot.create_chat_invite_link(
-                    PREMIUM_CHANNEL_ID,
-                    member_limit=1,
-                    expire_date=int(time.time()) + 30 * 24 * 3600
-                )
-                invite_link = link_obj.invite_link
-            except Exception as e:
-                invite_link = f"Could not generate: {str(e)}"
+        grant_premium(user_id, plan, review_key)
 
-        msg = (
-            f"🎉 *Payment Approved! Welcome to Premium!*\n\n"
-            f"📦 Plan: {plan}\n"
-            f"🔑 Access Token: `{access_token}`\n"
-        )
-        if invite_link:
-            msg += f"📲 Join Here: {invite_link}\n"
-        msg += "\nThank you for your purchase! 🙏"
-
-        bot.send_message(user_id, msg, parse_mode="Markdown")
         bot.edit_message_caption(
             f"✅ *APPROVED*\n\n" + call.message.caption,
             call.message.chat.id,
             call.message.message_id,
             parse_mode="Markdown"
         )
-
-        pending_reviews.pop(review_key, None)
-        pending_payments.pop(user_id, None)
         bot.answer_callback_query(call.id, "✅ Approved!")
 
     except Exception as e:
@@ -332,7 +456,7 @@ def decline_payment(call):
     except Exception as e:
         print(f"DECLINE ERROR: {str(e)}")
 
-# ── KEEP ALIVE (for Render free tier) ────────────────────────
+# ── KEEP ALIVE (Render free tier) ────────────────────────────
 def keep_alive():
     while True:
         time.sleep(600)
