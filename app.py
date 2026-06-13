@@ -6,7 +6,6 @@ from telebot import types
 logging.basicConfig(level=logging.DEBUG)
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-UPI_API_KEY = os.environ["UPI_API_KEY"]
 OWNER_CHAT_ID = os.environ["OWNER_CHAT_ID"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 PREMIUM_CHANNEL_ID = os.environ.get("PREMIUM_CHANNEL_ID", "")
@@ -72,6 +71,7 @@ def show_plans(call):
 
 # ── USER SELECTS PLAN → SEND QR ───────────────────────────────
 @bot.callback_query_handler(func=lambda c: c.data.startswith("buy_"))
+@bot.callback_query_handler(func=lambda c: c.data.startswith("buy_"))
 def handle_plan_selection(call):
     try:
         plan_key = call.data.replace("buy_", "")
@@ -84,41 +84,21 @@ def handle_plan_selection(call):
         amount = plan["amount"]
         pending_payments[user_id] = {"amount": amount, "plan": plan["label"]}
 
-        try:
-            response = requests.post(
-                "https://upigateway.com/api/create",
-                headers={"Authorization": f"Bearer {UPI_API_KEY}"},
-                json={"amount": amount, "currency": "INR"},
-                timeout=10
-            )
-            data = response.json()
-            qr_url = data.get("qr_url") or data.get("payment_url")
-            order_id = data.get("order_id", "N/A")
-            pending_payments[user_id]["order_id"] = order_id
+        YOUR_UPI_ID = "veerakumarchellaiyan125-1@okaxis"  # 👈 Replace with your UPI ID
 
-            bot.send_message(call.message.chat.id,
-                f"💳 *{plan['label']}*\n"
-                f"Amount: *₹{amount}*\n\n"
-                f"Scan the QR below and complete payment.\n"
-                f"After paying, send the *payment screenshot* here.\n\n"
-                f"🔖 Order ID: `{order_id}`",
-                parse_mode="Markdown"
-            )
-
-            if qr_url:
-                bot.send_photo(call.message.chat.id, qr_url,
-                    caption=f"📲 Scan & pay ₹{amount}"
-                )
-            else:
-                bot.send_message(call.message.chat.id,
-                    f"🔗 Payment link: {data.get('payment_url', 'Not available')}"
-                )
-
-        except Exception as e:
-            bot.send_message(call.message.chat.id, f"❌ Error generating QR: {str(e)}")
+        bot.send_message(call.message.chat.id,
+            f"💳 *{plan['label']}*\n"
+            f"Amount: *₹{amount}*\n\n"
+            f"Send payment to:\n"
+            f"📲 UPI ID: `{YOUR_UPI_ID}`\n\n"
+            f"After paying, send the *payment screenshot* here.\n"
+            f"⚠️ Make sure to pay exactly ₹{amount}",
+            parse_mode="Markdown"
+        )
 
     except Exception as e:
         print(f"PLAN SELECT ERROR: {str(e)}")
+        bot.send_message(call.message.chat.id, f"❌ Error: {str(e)}"))
 
 # ── USER SENDS SCREENSHOT ─────────────────────────────────────
 @bot.message_handler(content_types=["photo"])
