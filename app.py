@@ -465,4 +465,15 @@ def boot_telegram_bot():
         try:
             bot.polling(non_stop=True, timeout=60, long_polling_timeout=60, skip_pending=True)
         except Exception as e:
-            print(f"⚠️ Netwo
+            print(f"⚠️ Network error, reconnecting... {e}", flush=True)
+            time.sleep(5)
+
+threading.Thread(target=boot_telegram_bot, daemon=True).start()
+
+if __name__ == "__main__":
+    import logging
+    log = logging.getLogger('werkzeug')
+    log.setLevel(logging.ERROR)
+    
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
