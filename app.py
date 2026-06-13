@@ -10,6 +10,8 @@ OWNER_CHAT_ID = os.environ["OWNER_CHAT_ID"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 PREMIUM_CHANNEL_ID = os.environ.get("PREMIUM_CHANNEL_ID", "")
 
+YOUR_UPI_ID = "veerakumarchellaiyan125-1@okaxis"
+
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
@@ -69,8 +71,7 @@ def show_plans(call):
     except Exception as e:
         print(f"PLANS ERROR: {str(e)}")
 
-# ── USER SELECTS PLAN → SEND QR ───────────────────────────────
-@bot.callback_query_handler(func=lambda c: c.data.startswith("buy_"))
+# ── USER SELECTS PLAN → SHOW UPI ─────────────────────────────
 @bot.callback_query_handler(func=lambda c: c.data.startswith("buy_"))
 def handle_plan_selection(call):
     try:
@@ -84,21 +85,19 @@ def handle_plan_selection(call):
         amount = plan["amount"]
         pending_payments[user_id] = {"amount": amount, "plan": plan["label"]}
 
-        YOUR_UPI_ID = "veerakumarchellaiyan125-1@okaxis"  # 👈 Replace with your UPI ID
-
         bot.send_message(call.message.chat.id,
             f"💳 *{plan['label']}*\n"
             f"Amount: *₹{amount}*\n\n"
             f"Send payment to:\n"
             f"📲 UPI ID: `{YOUR_UPI_ID}`\n\n"
-            f"After paying, send the *payment screenshot* here.\n"
+            f"✅ After paying, send the *payment screenshot* here.\n"
             f"⚠️ Make sure to pay exactly ₹{amount}",
             parse_mode="Markdown"
         )
 
     except Exception as e:
         print(f"PLAN SELECT ERROR: {str(e)}")
-        bot.send_message(call.message.chat.id, f"❌ Error: {str(e)}"))
+        bot.send_message(call.message.chat.id, f"❌ Error: {str(e)}")
 
 # ── USER SENDS SCREENSHOT ─────────────────────────────────────
 @bot.message_handler(content_types=["photo"])
@@ -332,6 +331,19 @@ def decline_payment(call):
 
     except Exception as e:
         print(f"DECLINE ERROR: {str(e)}")
+
+# ── KEEP ALIVE (for Render free tier) ────────────────────────
+def keep_alive():
+    while True:
+        time.sleep(600)
+        try:
+            requests.get("https://upi-tg-bot.onrender.com")
+        except:
+            pass
+
+thread = threading.Thread(target=keep_alive)
+thread.daemon = True
+thread.start()
 
 # ── STARTUP ───────────────────────────────────────────────────
 if __name__ == "__main__":
