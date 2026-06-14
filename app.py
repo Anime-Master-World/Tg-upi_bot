@@ -435,6 +435,60 @@ def owner_free_get(call):
         parse_mode="Markdown"
     )
 
+# ── SETTINGS MENU ──────────────────────────────────────────────
+@bot.callback_query_handler(func=lambda c: c.data == "owner_settings")
+def owner_settings(call):
+    if not is_owner(call.message.chat.id): return
+    channel = bot_settings.get("premium_channel_id") or "Not set"
+    token = bot_settings.get("access_token") or "Auto-generated per user"
+
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        types.InlineKeyboardButton("📢 Set Premium Channel", callback_data="set_channel"),
+        types.InlineKeyboardButton("🔑 Set Access Token",    callback_data="set_token"),
+        types.InlineKeyboardButton("🔄 Reset Token to Auto", callback_data="reset_token"),
+        types.InlineKeyboardButton("🔙 Back",                callback_data="owner_back"),
+    )
+    bot.edit_message_text(
+        f"⚙️ *Bot Settings*\n\n"
+        f"📢 Premium Channel ID: `{channel}`\n"
+        f"🔑 Access Token: `{token}`",
+        call.message.chat.id, call.message.message_id,
+        parse_mode="Markdown", reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda c: c.data == "set_channel")
+def set_channel(call):
+    if not is_owner(call.message.chat.id): return
+    owner_states[call.from_user.id] = {"action": "set_channel"}
+    bot.send_message(call.message.chat.id,
+        "📢 *Set Premium Channel*\n\n"
+        "Send the channel ID (format: `-100xxxxxxxxxx`)\n\n"
+        "💡 To get this:\n"
+        "1. Add bot as admin in your channel\n"
+        "2. Forward any message from the channel to @userinfobot\n"
+        "3. Copy the channel ID it shows",
+        parse_mode="Markdown"
+    )
+
+@bot.callback_query_handler(func=lambda c: c.data == "set_token")
+def set_token(call):
+    if not is_owner(call.message.chat.id): return
+    owner_states[call.from_user.id] = {"action": "set_token"}
+    bot.send_message(call.message.chat.id,
+        "🔑 *Set Access Token*\n\n"
+        "Send the access token that will be given to ALL users.\n"
+        "_(e.g. PREMIUM2026)_",
+        parse_mode="Markdown"
+    )
+
+@bot.callback_query_handler(func=lambda c: c.data == "reset_token")
+def reset_token(call):
+    if not is_owner(call.message.chat.id): return
+    bot_settings["access_token"] = None
+    bot.answer_callback_query(call.id, "✅ Reset to auto-generated tokens")
+    owner_settings(call)
+
 # ── VIEW BOT LINKS ────────────────────────────────────────────
 @bot.callback_query_handler(func=lambda c: c.data == "owner_view_links")
 def owner_view_links(call):
