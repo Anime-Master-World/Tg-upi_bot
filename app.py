@@ -954,7 +954,20 @@ def grant_premium(user_id, plan_label, plan_key, review_key):
         if channel_id:
             try:
                 link_obj = bot.create_chat_invite_link(
-                    channel_id,)
+                    channel_id,
+                    member_limit=1,
+                    expire_date=int(time.time()) + 30 * 24 * 3600,
+                    name=f"user_{user_id}_{review_key}"
+                )
+                msg += (
+                    f"📢 *Private Channel Access*\n"
+                    f"{link_obj.invite_link}\n"
+                    f"⚠️ This link works for *1 account only* and expires in 30 days.\n\n"
+                )
+            except Exception as e:
+                msg += f"📢 Channel link error: {str(e)}\n\n"
+                print(f"CHANNEL LINK ERROR: {str(e)}")
+
         # Other deliverables (skip private_channel, already handled above)
         for item in deliverables:
             if item == "private_channel":
