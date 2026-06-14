@@ -950,29 +950,17 @@ def grant_premium(user_id, plan_label, plan_key, review_key):
         msg = f"🎉 *Order Confirmed! Thank you!*\n\n📦 Plan: {plan_label}\n\n"
 
         # Always generate a single-use channel invite link
-        if PREMIUM_CHANNEL_ID:
+        channel_id = bot_settings.get("premium_channel_id")
+        if channel_id:
             try:
                 link_obj = bot.create_chat_invite_link(
-                    PREMIUM_CHANNEL_ID,
-                    member_limit=1,
-                    expire_date=int(time.time()) + 30 * 24 * 3600,
-                    name=f"user_{user_id}_{review_key}"
-                )
-                msg += (
-                    f"📢 *Private Channel Access*\n"
-                    f"{link_obj.invite_link}\n"
-                    f"⚠️ This link works for *1 account only* and expires in 30 days.\n\n"
-                )
-            except Exception as e:
-                msg += f"📢 Channel link error: {str(e)}\n\n"
-                print(f"CHANNEL LINK ERROR: {str(e)}")
-
+                    channel_id,)
         # Other deliverables (skip private_channel, already handled above)
         for item in deliverables:
             if item == "private_channel":
                 continue
             elif item == "access_token":
-                token = str(uuid.uuid4()).replace("-", "")[:16].upper()
+                token = bot_settings.get("access_token") or str(uuid.uuid4()).replace("-", "")[:16].upper()
                 msg += f"🔑 *Access Token:* `{token}`\n"
             elif item == "vip_badge":
                 msg += f"👑 *VIP Badge* activated on your account.\n"
