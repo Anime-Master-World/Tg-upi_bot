@@ -112,6 +112,7 @@ def send_owner_menu(chat_id, message_id=None):
         types.InlineKeyboardButton("📦 Deliverables",  callback_data="owner_deliverables"),
         types.InlineKeyboardButton("🔗 Create Link",   callback_data="owner_create_link"),
         types.InlineKeyboardButton("📊 View Links",    callback_data="owner_view_links"),
+        types.InlineKeyboardButton("🎁 Free Access",   callback_data="owner_free_access"),
     )
     text = "👑 *Owner Panel*\n\nManage plans, deliverables, and bot links."
     if message_id:
@@ -388,6 +389,43 @@ def create_link_for_plan(call):
         f"💰 Amount: ₹{plan.get('amount', 'N/A')}\n\n"
         f"🔗 Link:\n`{link}`\n\n"
         f"Share this link — users go directly to this plan.",
+        parse_mode="Markdown"
+    )
+
+# ── FREE ACCESS (OWNER ONLY) ──────────────────────────────────
+@bot.callback_query_handler(func=lambda c: c.data == "owner_free_access")
+def owner_free_access(call):
+    if not is_owner(call.message.chat.id): return
+    if not plans:
+        bot.answer_callback_query(call.id, "No plans available.")
+        return
+    markup = types.InlineKeyboardMarkup()
+    for key, plan in plans.items():
+        markup.add(types.InlineKeyboardButton(
+            f"{plan['label']} — ₹{plan['amount']}",
+            callback_data=f"freeget_{key}"
+        ))
+    markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="owner_back"))
+    bot.edit_message_text(
+        "🎁 *Free Access*\n\nSelect a plan to claim instantly (no payment required):",
+        call.message.chat.id, call.message.message_id,
+        parse_mode="Markdown", reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("freeget_"))
+def owner_free_get(call):
+    if not is_owner(call.message.chat.id): return
+    plan_key = call.data.replace("freeget_", "")
+    plan = plans.get(plan_key)
+    if not plan:
+        bot.answer_callback_query(call.id, "Plan not found.")
+        return
+
+    review_key = str(uuid.uuid4())[:8]
+    grant_premium(call.from_user.id, plan["label"], plan_key, review_key)
+    bot.answer_callback_query(call.id, "🎁 Granted!")
+    bot.send_message(call.message.chat.id,
+        f"✅ *Free access granted for:* {plan['label']}",
         parse_mode="Markdown"
     )
 
