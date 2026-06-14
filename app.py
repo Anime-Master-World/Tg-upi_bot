@@ -409,6 +409,14 @@ def owner_view_links(call):
     bot.edit_message_text(text, call.message.chat.id, call.message.message_id,
         parse_mode="Markdown", reply_markup=markup)
 
+@bot.message_handler(commands=["cancel"])
+def cancel_state(message):
+    if message.from_user.id in owner_states:
+        del owner_states[message.from_user.id]
+        bot.send_message(message.chat.id, "✅ Cancelled. Send /admin to continue.")
+    else:
+        bot.send_message(message.chat.id, "Nothing to cancel.")
+
 # ══════════════════════════════════════════════════════════════
 # OWNER TEXT INPUT
 # ══════════════════════════════════════════════════════════════
@@ -418,10 +426,15 @@ def owner_view_links(call):
 )
 def handle_owner_input(message):
     state = owner_states.get(message.from_user.id)
-    if not state: return
+    print(f"OWNER STATE DEBUG: {state}")  # 👈 debug line
+
+    if not state:
+        return
+
     action = state["action"]
     text = message.text.strip()
 
+    # ── ADD PLAN FLOW ─────────────────────────────────────────
     if action == "add_plan":
         step = state["step"]
         data = state.get("data", {})
@@ -442,7 +455,7 @@ def handle_owner_input(message):
             options = "\n".join([f"`{k}` — {v}" for k, v in deliverable_types.items()])
             bot.send_message(message.chat.id,
                 f"📦 Step 3: Choose deliverables:\n\n{options}\n\n"
-                f"Send keys separated by comma:\n_(e.g. private\_channel, access\_token)_",
+                f"Send keys separated by comma:\n_(e.g. private_channel, access_token)_",
                 parse_mode="Markdown"
             )
 
@@ -450,7 +463,11 @@ def handle_owner_input(message):
             keys = [k.strip() for k in text.split(",")]
             valid = [k for k in keys if k in deliverable_types]
             if not valid:
-                bot.send_message(message.chat.id, "❌ No valid keys. Try again.")
+                bot.send_message(message.chat.id,
+                    f"❌ No valid keys. Available keys:\n" +
+                    ", ".join([f"`{k}`" for k in deliverable_types.keys()]),
+                    parse_mode="Markdown"
+                )
                 return
             data["deliverables"] = valid
             plan_key = f"plan_{uuid.uuid4().hex[:6]}"
@@ -470,6 +487,7 @@ def handle_owner_input(message):
                 parse_mode="Markdown"
             )
 
+    # ── EDIT NAME ─────────────────────────────────────────────
     elif action == "edit_name":
         plan_key = state["plan_key"]
         if plan_key in plans:
@@ -477,24 +495,41 @@ def handle_owner_input(message):
             del owner_states[message.from_user.id]
             bot.send_message(message.chat.id,
                 f"✅ Name updated to: *{text}*", parse_mode="Markdown")
+        else:
+            del owner_states[message.from_user.id]
+            bot.send_message(message.chat.id, "❌ Plan no longer exists.")
 
+    # ── EDIT AMOUNT ───────────────────────────────────────────
     elif action == "edit_amount":
         plan_key = state["plan_key"]
-        if not text.isdigit():
-            bot.send_message(message.chat.id, "❌ Enter a valid number.")
+
+        # Allow ₹ symbol or commas, just in case
+        clean_text = text.replace("₹", "").replace(",", "").strip()
+
+        if not clean_text.isdigit():
+            bot.send_message(message.chat.id, "❌ Enter a valid number (e.g. 199).")
             return
+
         if plan_key in plans:
-            plans[plan_key]["amount"] = int(text)
+            plans[plan_key]["amount"] = int(clean_text)
             del owner_states[message.from_user.id]
             bot.send_message(message.chat.id,
-                f"✅ Amount updated to: *₹{text}*", parse_mode="Markdown")
+                f"✅ Amount updated to: *₹{clean_text}*", parse_mode="Markdown")
+        else:
+            del owner_states[message.from_user.id]
+            bot.send_message(message.chat.id, "❌ Plan no longer exists.")
 
+    # ── EDIT DELIVERABLES ─────────────────────────────────────
     elif action == "edit_deliv":
         plan_key = state["plan_key"]
         keys = [k.strip() for k in text.split(",")]
         valid = [k for k in keys if k in deliverable_types]
         if not valid:
-            bot.send_message(message.chat.id, "❌ No valid keys found.")
+            bot.send_message(message.chat.id,
+                f"❌ No valid keys. Available keys:\n" +
+                ", ".join([f"`{k}`" for k in deliverable_types.keys()]),
+                parse_mode="Markdown"
+            )
             return
         if plan_key in plans:
             plans[plan_key]["deliverables"] = valid
@@ -502,7 +537,11 @@ def handle_owner_input(message):
             items = "\n".join([f"  • {deliverable_types[d]}" for d in valid])
             bot.send_message(message.chat.id,
                 f"✅ Deliverables updated:\n{items}", parse_mode="Markdown")
+        else:
+            del owner_states[message.from_user.id]
+            bot.send_message(message.chat.id, "❌ Plan no longer exists.")
 
+    # ── ADD DELIVERABLE TYPE ──────────────────────────────────
     elif action == "add_deliv_type":
         step = state.get("step")
         if step == "key":
@@ -510,7 +549,7 @@ def handle_owner_input(message):
             state["step"] = "label"
             state["deliv_key"] = key
             bot.send_message(message.chat.id,
-                f"✅ Key: `{key}`\n\nStep 2: Enter the description:",
+                f"✅ Key: `{key}`\n\nStep 2: Enter the description:\n_(e.g. Access to eBook library)_",
                 parse_mode="Markdown"
             )
         elif step == "label":
@@ -520,6 +559,11 @@ def handle_owner_input(message):
             bot.send_message(message.chat.id,
                 f"✅ *Deliverable Added!*\n\n`{key}` — {text}",
                 parse_mode="Markdown")
+
+    else:
+        # Unknown/stale state — clear it
+        del owner_states[message.from_user.id]
+        bot.send_message(message.chat.id, "⚠️ Session reset. Send /admin to continue.")
 
 # ══════════════════════════════════════════════════════════════
 # SCREENSHOT SCANNING
