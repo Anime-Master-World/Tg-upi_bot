@@ -46,6 +46,11 @@ pending_reviews  = {}
 owner_states     = {}
 bot_links        = {}
 
+bot_settings = {
+    "premium_channel_id": PREMIUM_CHANNEL_ID,  # can be changed by owner
+    "access_token": None                        # if set, same token given to all users
+}
+
 # ── WEBHOOK ──────────────────────────────────────────────────
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
@@ -113,8 +118,9 @@ def send_owner_menu(chat_id, message_id=None):
         types.InlineKeyboardButton("🔗 Create Link",   callback_data="owner_create_link"),
         types.InlineKeyboardButton("📊 View Links",    callback_data="owner_view_links"),
         types.InlineKeyboardButton("🎁 Free Access",   callback_data="owner_free_access"),
+        types.InlineKeyboardButton("⚙️ Settings",      callback_data="owner_settings"),
     )
-    text = "👑 *Owner Panel*\n\nManage plans, deliverables, and bot links."
+    text = "👑 *Owner Panel*\n\nManage plans, deliverables, links, and settings."
     if message_id:
         bot.edit_message_text(text, chat_id, message_id,
             parse_mode="Markdown", reply_markup=markup)
