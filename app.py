@@ -786,17 +786,28 @@ def grant_premium(user_id, plan_label, plan_key, review_key):
         deliverables = plan.get("deliverables", [])
         msg = f"🎉 *Order Confirmed! Thank you!*\n\n📦 Plan: {plan_label}\n\n"
 
+        # Always generate a single-use channel invite link
+        if PREMIUM_CHANNEL_ID:
+            try:
+                link_obj = bot.create_chat_invite_link(
+                    PREMIUM_CHANNEL_ID,
+                    member_limit=1,
+                    expire_date=int(time.time()) + 30 * 24 * 3600,
+                    name=f"user_{user_id}_{review_key}"
+                )
+                msg += (
+                    f"📢 *Private Channel Access*\n"
+                    f"{link_obj.invite_link}\n"
+                    f"⚠️ This link works for *1 account only* and expires in 30 days.\n\n"
+                )
+            except Exception as e:
+                msg += f"📢 Channel link error: {str(e)}\n\n"
+                print(f"CHANNEL LINK ERROR: {str(e)}")
+
+        # Other deliverables (skip private_channel, already handled above)
         for item in deliverables:
-            if item == "private_channel" and PREMIUM_CHANNEL_ID:
-                try:
-                    link_obj = bot.create_chat_invite_link(
-                        PREMIUM_CHANNEL_ID,
-                        member_limit=1,
-                        expire_date=int(time.time()) + 30 * 24 * 3600
-                    )
-                    msg += f"📢 *Private Channel:* {link_obj.invite_link}\n"
-                except Exception as e:
-                    msg += f"📢 Channel link error: {str(e)}\n"
+            if item == "private_channel":
+                continue
             elif item == "access_token":
                 token = str(uuid.uuid4()).replace("-", "")[:16].upper()
                 msg += f"🔑 *Access Token:* `{token}`\n"
