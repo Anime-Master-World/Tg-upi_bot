@@ -585,6 +585,27 @@ def handle_owner_input(message):
                 parse_mode="Markdown"
             )
 
+    elif action == "set_channel":
+        clean = text.strip()
+        if not clean.startswith("-100"):
+            bot.send_message(message.chat.id,
+                "❌ Channel ID must start with `-100`. Try again.",
+                parse_mode="Markdown")
+            return
+        bot_settings["premium_channel_id"] = clean
+        del owner_states[message.from_user.id]
+        bot.send_message(message.chat.id,
+            f"✅ Premium channel updated to: `{clean}`",
+            parse_mode="Markdown")
+
+    elif action == "set_token":
+        bot_settings["access_token"] = text
+        del owner_states[message.from_user.id]
+        bot.send_message(message.chat.id,
+            f"✅ Access token updated to: `{text}`\n\n"
+            f"This token will be sent to all users who receive an access_token deliverable.",
+            parse_mode="Markdown")
+
     # ── EDIT NAME ─────────────────────────────────────────────
     elif action == "edit_name":
         plan_key = state["plan_key"]
