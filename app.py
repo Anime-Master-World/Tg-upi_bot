@@ -957,4 +957,169 @@ def handle_non_photo(message):
 # ══════════════════════════════════════════════════════════════
 # GRANT ACCESS — generates one-time channel invite + tracks expiry
 # ══════════════════════════════════════════════════════════════
-def grant_premium(user_id, plan
+def grant_premium(user_id, plan_label, plan_key, review_key, username=None, track_expiry=True):
+    try:
+        plan = plans.get(plan_key, {})
+        channel_id = plan.get("channel_id")
+        duration_days = plan.get("duration_days", 30)
+        expires_at = time.time() + duration_days * 24 * 3600
+
+        msg = f"🎉 *Order Confirmed! Thank you!*\n\n📦 Plan: {plan_label}\n"
+        if track_expiry:
+            msg += f"⏳ Valid until: {ts_to_ist(expires_at)}\n\n"
+        else:
+            msg += "\n"
+
+        if channel_id:
+            try:
+                link_obj = bot.create_chat_invite_link(
+                    channel_id,
+                    member_limit=1,
+                    expire_date=int(time.time()) + 48 * 3600,
+                    name=f"user_{user_id}_{review_key}"
+                )
+                msg += (
+                    f"📢 *Private Channel Access*\n"
+                    f"{link_obj.invite_link}\n"
+                    f"⚠️ This link works for *1 account only* and expires in 48 hours.\n\n"
+                )
+                if track_expiry and str(user_id) != str(OWNER_CHAT_ID):
+                    active_subscriptions.append({
+                        "user_id": user_id,
+                        "username": username,
+                        "channel_id": channel_id,
+                        "plan_label": plan_label,
+                        "expires_at": expires_at
+                    })
+            except Exception as e:
+                msg += f"📢 Channel link error: {str(e)}\n\n"
+                print(f"CHANNEL LINK ERROR: {str(e)}")
+        else:
+            msg += "⚠️ No channel configured for this plan. Contact the owner.\n\n"
+
+        msg += "🙏 Thank you for your purchase!"
+        bot.send_message(user_id, msg, parse_mode="Markdown")
+        pending_reviews.pop(review_key, None)
+        pending_payments.pop(user_id, None)
+
+    except Exception as e:
+        print(f"GRANT ERROR: {str(e)}")
+
+# ── APPROVE ───────────────────────────────────────────────────
+@bot.callback_query_handler(func=lambda c: c.data.startswith("approve_"))
+def approve_payment(call):
+    try:
+        if not is_owner(call.message.chat.id):
+            bot.answer_callback_query(call.id, "⛔ Not authorized.")
+            return
+        review_key = call.data.replace("approve_", "")
+        review = pending_reviews.get(review_key)
+        if not review:
+            bot.answer_callback_query(call.id, "⚠️ Already processed.")
+            return
+        grant_premium(review["user_id"], review["plan"], review["plan_key"], review_key,
+            username=review.get("username"))
+        bot.edit_message_caption(
+            f"✅ *APPROVED at {now_ist()}*\n\n" + call.message.caption,
+            call.message.chat.id, call.message.message_id,
+            parse_mode="Markdown"
+        )
+        bot.answer_callback_query(call.id, "✅ Approved!")
+    except Exception as e:
+        print(f"APPROVE ERROR: {str(e)}")
+
+# ── DECLINE ───────────────────────────────────────────────────
+@bot.callback_query_handler(func=lambda c: c.data.startswith("decline_"))
+def decline_payment(call):
+    try:
+        if not is_owner(call.message.chat.id):
+            bot.answer_callback_query(call.id, "⛔ Not authorized.")
+            return
+        review_key = call.data.replace("decline_", "")
+        review = pending_reviews.get(review_key)
+        if not review:
+            bot.answer_callback_query(call.id, "⚠️ Already processed.")
+            return
+        user_id = review["user_id"]
+        bot.send_message(user_id,
+            "❌ *Order Not Confirmed*\n\n"
+            "Your payment could not be verified.\n\n"
+            "Possible reasons:\n"
+            "• Amount paid does not match\n"
+            "• Payment sent to wrong UPI ID\n"
+            "• Screenshot is unclear\n\n"
+            "Please try /start again or contact support.",
+            parse_mode="Markdown"
+        )
+        bot.edit_message_caption(
+            f"❌ *DECLINED at {now_ist()}*\n\n" + call.message.caption,
+            call.message.chat.id, call.message.message_id,
+            parse_mode="Markdown"
+        )
+        pending_reviews.pop(review_key, None)
+        pending_payments.pop(user_id, None)
+        bot.answer_callback_query(call.id, "❌ Declined!")
+    except Exception as e:
+        print(f"DECLINE ERROR: {str(e)}")
+
+# ══════════════════════════════════════════════════════════════
+# EXPIRY CHECKER — removes users from channel when plan ends
+# ══════════════════════════════════════════════════════════════
+def remove_user_from_channel(channel_id, user_id):
+    try:
+        bot.ban_chat_member(channel_id, user_id)
+        bot.unban_chat_member(channel_id, user_id, only_if_banned=True)
+        return True
+    except Exception as e:
+        print(f"REMOVE USER ERROR: {str(e)}")
+        return False
+
+def expiry_checker():
+    while True:
+        time.sleep(EXPIRY_CHECK_INTERVAL)
+        try:
+            now = time.time()
+            expired = [s for s in active_subscriptions if s["expires_at"] <= now]
+            for sub in expired:
+                removed = remove_user_from_channel(sub["channel_id"], sub["user_id"])
+                try:
+                    bot.send_message(sub["user_id"],
+                        f"⏰ *Your plan has expired!*\n\n"
+                        f"📦 Plan: {sub['plan_label']}\n"
+                        f"You have been removed from the channel.\n\n"
+                        f"Send /start to renew your subscription.",
+                        parse_mode="Markdown"
+                    )
+                except Exception as e:
+                    print(f"EXPIRY NOTIFY USER ERROR: {str(e)}")
+                try:
+                    bot.send_message(OWNER_CHAT_ID,
+                        f"⏰ *Subscription Expired*\n\n"
+                        f"👤 User: {sub.get('username') or sub['user_id']}\n"
+                        f"📦 Plan: {sub['plan_label']}\n"
+                        f"📢 Channel: `{sub['channel_id']}`\n"
+                        f"🚪 Removed: {'Yes' if removed else 'Failed — check bot permissions'}",
+                        parse_mode="Markdown"
+                    )
+                except Exception as e:
+                    print(f"EXPIRY NOTIFY OWNER ERROR: {str(e)}")
+                active_subscriptions.remove(sub)
+        except Exception as e:
+            print(f"EXPIRY CHECKER ERROR: {str(e)}")
+
+threading.Thread(target=expiry_checker, daemon=True).start()
+
+# ── KEEP ALIVE (Render free tier) ────────────────────────────
+def keep_alive():
+    while True:
+        time.sleep(600)
+        try:
+            requests.get("https://upi-tg-bot.onrender.com")
+        except:
+            pass
+
+threading.Thread(target=keep_alive, daemon=True).start()
+
+# ── STARTUP ───────────────────────────────────────────────────
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=7860)
