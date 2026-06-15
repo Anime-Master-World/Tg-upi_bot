@@ -471,4 +471,490 @@ def owner_settings(call):
     upi = bot_settings.get("upi_id") or "Not set"
     names = ", ".join(bot_settings.get("verified_names", [])) or "None"
 
-    markup = types.Inlin
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        types.InlineKeyboardButton("💳 Set UPI ID",        callback_data="set_upi"),
+        types.InlineKeyboardButton("👤 Set Verified Names", callback_data="set_names"),
+        types.InlineKeyboardButton("🔙 Back",               callback_data="owner_back"),
+    )
+    bot.edit_message_text(
+        f"⚙️ *Bot Settings*\n\n"
+        f"💳 UPI ID: `{upi}`\n"
+        f"👤 Verified Names: {names}",
+        call.message.chat.id, call.message.message_id,
+        parse_mode="Markdown", reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda c: c.data == "set_upi")
+def set_upi(call):
+    if not is_owner(call.message.chat.id): return
+    owner_states[call.from_user.id] = {"action": "set_upi"}
+    bot.send_message(call.message.chat.id,
+        "💳 *Set UPI ID*\n\nSend your UPI ID:\n_(e.g. yourname@bank)_",
+        parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda c: c.data == "set_names")
+def set_names(call):
+    if not is_owner(call.message.chat.id): return
+    owner_states[call.from_user.id] = {"action": "set_names"}
+    bot.send_message(call.message.chat.id,
+        "👤 *Set Verified Names*\n\n"
+        "Send names/UPI IDs (comma separated) that should match the "
+        "*recipient* field for auto-approval:\n"
+        "_(e.g. Nithesh Kumar, nitheshkumar05@fam)_",
+        parse_mode="Markdown")
+
+# ══════════════════════════════════════════════════════════════
+# OWNER TEXT INPUT (general)
+# ══════════════════════════════════════════════════════════════
+@bot.message_handler(
+    func=lambda m: m.from_user.id in owner_states
+        and is_owner(m.chat.id)
+        and owner_states[m.from_user.id]["action"] not in ["add_plan_channel", "edit_channel"],
+    content_types=["text"]
+)
+def handle_owner_input(message):
+    state = owner_states.get(message.from_user.id)
+    print(f"OWNER STATE DEBUG: {state}")
+    if not state:
+        return
+
+    action = state["action"]
+    text = message.text.strip()
+
+    # ── ADD PLAN FLOW ─────────────────────────────────────────
+    if action == "add_plan":
+        step = state["step"]
+        data = state.get("data", {})
+
+        if step == "name":
+            data["label"] = text
+            state["step"] = "amount"
+            state["data"] = data
+            bot.send_message(message.chat.id, "💰 Step 2/4: Enter the amount (₹):")
+
+        elif step == "amount":
+            clean = text.replace("₹", "").replace(",", "").strip()
+            if not clean.isdigit():
+                bot.send_message(message.chat.id, "❌ Enter a valid number.")
+                return
+            data["amount"] = int(clean)
+            state["step"] = "duration"
+            state["data"] = data
+            bot.send_message(message.chat.id,
+                "⏳ Step 3/4: Enter validity duration in *days*:\n_(e.g. 30)_",
+                parse_mode="Markdown")
+
+        elif step == "duration":
+            clean = text.strip()
+            if not clean.isdigit():
+                bot.send_message(message.chat.id, "❌ Enter a valid number of days.")
+                return
+            data["duration_days"] = int(clean)
+            state["step"] = "channel"
+            state["data"] = data
+            owner_states[message.from_user.id] = {"action": "add_plan_channel", "data": data}
+            bot.send_message(message.chat.id,
+                "📢 Step 4/4: Set the channel for this plan.\n\n"
+                "➡️ Easiest: forward any message from the channel to me here.\n"
+                "➡️ Or send the channel ID directly (starts with `-100`).\n\n"
+                "⚠️ Bot must be admin in that channel with "
+                "*Invite Users* and *Ban Users* permissions.",
+                parse_mode="Markdown")
+
+    # ── EDIT NAME ─────────────────────────────────────────────
+    elif action == "edit_name":
+        plan_key = state["plan_key"]
+        if plan_key in plans:
+            plans[plan_key]["label"] = text
+            del owner_states[message.from_user.id]
+            bot.send_message(message.chat.id,
+                f"✅ Name updated to: *{text}*", parse_mode="Markdown")
+        else:
+            del owner_states[message.from_user.id]
+            bot.send_message(message.chat.id, "❌ Plan no longer exists.")
+
+    # ── EDIT AMOUNT ───────────────────────────────────────────
+    elif action == "edit_amount":
+        plan_key = state["plan_key"]
+        clean = text.replace("₹", "").replace(",", "").strip()
+        if not clean.isdigit():
+            bot.send_message(message.chat.id, "❌ Enter a valid number (e.g. 199).")
+            return
+        if plan_key in plans:
+            plans[plan_key]["amount"] = int(clean)
+            del owner_states[message.from_user.id]
+            bot.send_message(message.chat.id,
+                f"✅ Amount updated to: *₹{clean}*", parse_mode="Markdown")
+        else:
+            del owner_states[message.from_user.id]
+            bot.send_message(message.chat.id, "❌ Plan no longer exists.")
+
+    # ── EDIT DURATION ─────────────────────────────────────────
+    elif action == "edit_duration":
+        plan_key = state["plan_key"]
+        clean = text.strip()
+        if not clean.isdigit():
+            bot.send_message(message.chat.id, "❌ Enter a valid number of days.")
+            return
+        if plan_key in plans:
+            plans[plan_key]["duration_days"] = int(clean)
+            del owner_states[message.from_user.id]
+            bot.send_message(message.chat.id,
+                f"✅ Duration updated to: *{clean} days*", parse_mode="Markdown")
+        else:
+            del owner_states[message.from_user.id]
+            bot.send_message(message.chat.id, "❌ Plan no longer exists.")
+
+    # ── SET UPI ID ────────────────────────────────────────────
+    elif action == "set_upi":
+        bot_settings["upi_id"] = text
+        del owner_states[message.from_user.id]
+        bot.send_message(message.chat.id,
+            f"✅ UPI ID set to: `{text}`", parse_mode="Markdown")
+
+    # ── SET VERIFIED NAMES ────────────────────────────────────
+    elif action == "set_names":
+        names = [n.strip() for n in text.split(",") if n.strip()]
+        bot_settings["verified_names"] = names
+        del owner_states[message.from_user.id]
+        bot.send_message(message.chat.id,
+            f"✅ Verified names set to:\n{', '.join(names) if names else 'None'}")
+
+    else:
+        del owner_states[message.from_user.id]
+        bot.send_message(message.chat.id, "⚠️ Session reset. Send /admin to continue.")
+
+# ══════════════════════════════════════════════════════════════
+# OWNER: CHANNEL SETUP (forwarded message or -100 ID)
+# ══════════════════════════════════════════════════════════════
+@bot.message_handler(
+    func=lambda m: m.from_user.id in owner_states
+        and is_owner(m.chat.id)
+        and owner_states[m.from_user.id]["action"] in ["add_plan_channel", "edit_channel"],
+    content_types=["text", "photo", "video", "document", "audio", "voice", "sticker", "animation"]
+)
+def handle_channel_input(message):
+    state = owner_states[message.from_user.id]
+    channel_id = None
+
+    if message.forward_from_chat:
+        channel_id = str(message.forward_from_chat.id)
+    elif message.text and message.text.strip().startswith("-100"):
+        channel_id = message.text.strip()
+
+    if not channel_id:
+        bot.send_message(message.chat.id,
+            "❌ Forward a message from the channel, or send the channel ID starting with `-100`.",
+            parse_mode="Markdown")
+        return
+
+    # Verify bot is admin in that channel
+    try:
+        bot_member = bot.get_chat_member(channel_id, bot.get_me().id)
+        if bot_member.status not in ["administrator", "creator"]:
+            bot.send_message(message.chat.id,
+                "⚠️ The bot must be an *admin* in that channel with "
+                "*Invite Users* and *Ban Users* permissions.",
+                parse_mode="Markdown")
+            return
+    except Exception as e:
+        bot.send_message(message.chat.id,
+            f"❌ Could not access that channel: {str(e)}\n"
+            f"Make sure the bot is added as admin there.")
+        return
+
+    if state["action"] == "add_plan_channel":
+        data = state["data"]
+        plan_key = f"plan_{uuid.uuid4().hex[:6]}"
+        plans[plan_key] = {
+            "label": data["label"],
+            "amount": data["amount"],
+            "duration_days": data["duration_days"],
+            "channel_id": channel_id
+        }
+        del owner_states[message.from_user.id]
+        bot.send_message(message.chat.id,
+            f"✅ *Plan Created!*\n\n"
+            f"🔑 `{plan_key}`\n"
+            f"📌 {data['label']}\n"
+            f"💰 ₹{data['amount']}\n"
+            f"⏳ {data['duration_days']} days\n"
+            f"📢 Channel: `{channel_id}`",
+            parse_mode="Markdown")
+
+    elif state["action"] == "edit_channel":
+        plan_key = state["plan_key"]
+        if plan_key in plans:
+            plans[plan_key]["channel_id"] = channel_id
+            del owner_states[message.from_user.id]
+            bot.send_message(message.chat.id,
+                f"✅ Channel updated to: `{channel_id}`", parse_mode="Markdown")
+        else:
+            del owner_states[message.from_user.id]
+            bot.send_message(message.chat.id, "❌ Plan no longer exists.")
+
+# ══════════════════════════════════════════════════════════════
+# SCREENSHOT SCANNING
+# ══════════════════════════════════════════════════════════════
+def scan_with_groq(img_base64, mime_type):
+    ist = timezone(timedelta(hours=5, minutes=30))
+    current_time = datetime.now(ist).strftime("%d %b %Y %I:%M %p IST")
+
+    response = requests.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        },
+        json={
+            "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime_type};base64,{img_base64}"}
+                    },
+                    {
+                        "type": "text",
+                        "text": f"""Current date and time is: {current_time}
+
+Analyze this image carefully. Your job is to:
+1. Detect if this is a real UPI payment screenshot
+2. Extract payment details
+3. Check if payment was made within the last 24 hours
+4. Detect if screenshot looks fake, edited, or manipulated
+
+Return ONLY this JSON:
+{{
+  "is_payment_screenshot": true or false,
+  "is_fake": true or false,
+  "fake_reason": "reason if fake else null",
+  "transaction_id": "UTR/transaction ID or null",
+  "amount": "amount as number only or null",
+  "recipient": "recipient name or UPI ID or null",
+  "status": "SUCCESS or FAILED or UNKNOWN",
+  "payment_date": "date from screenshot or null",
+  "payment_time": "time from screenshot or null",
+  "within_24_hours": true or false or null
+}}
+
+Fake detection rules:
+- Check for mismatched fonts, blur, pixelation around numbers
+- Check if logo or bank name looks genuine
+- Check if amounts or dates look edited
+- If payment date is more than 24 hours ago mark within_24_hours as false
+
+Return ONLY raw JSON. No markdown, no backticks, no explanation."""
+                    }
+                ]
+            }],
+            "temperature": 0,
+            "max_tokens": 512
+        },
+        timeout=30
+    )
+
+    result = response.json()
+    print(f"GROQ FULL RESPONSE: {result}")
+
+    if "error" in result:
+        raise Exception(f"Groq error: {result['error'].get('message', 'Unknown')}")
+    if "choices" not in result or not result["choices"]:
+        raise Exception("Groq returned no choices")
+
+    raw_text = result["choices"][0]["message"]["content"].strip()
+    print(f"GROQ RAW TEXT: {raw_text}")
+    clean_text = raw_text.replace("```json", "").replace("```", "").strip()
+    return json.loads(clean_text)
+
+# ── USER SENDS SCREENSHOT ─────────────────────────────────────
+@bot.message_handler(content_types=["photo"])
+def handle_screenshot(message):
+    try:
+        user_id = message.from_user.id
+
+        if user_id not in pending_payments:
+            bot.reply_to(message, "⚠️ No pending payment. Use /start to begin.")
+            return
+
+        bot.reply_to(message, "🔍 Scanning your payment screenshot...")
+
+        photo = message.photo[-1]
+        file_info = bot.get_file(photo.file_id)
+        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
+        img_response = requests.get(file_url, timeout=10)
+        img_base64 = base64.b64encode(img_response.content).decode("utf-8")
+
+        content_type = img_response.headers.get("Content-Type", "image/jpeg")
+        if "png" in content_type:
+            mime_type = "image/png"
+        elif "webp" in content_type:
+            mime_type = "image/webp"
+        else:
+            mime_type = "image/jpeg"
+
+        data = scan_with_groq(img_base64, mime_type)
+
+        # ── NOT A PAYMENT SCREENSHOT ──────────────────────────
+        if not data.get("is_payment_screenshot"):
+            bot.reply_to(message,
+                "❌ *This doesn't look like a payment screenshot.*\n\n"
+                "Please send a valid UPI payment screenshot showing:\n"
+                "• Transaction ID / UTR number\n"
+                "• Amount paid\n"
+                "• Recipient name or UPI ID\n"
+                "• Payment status",
+                parse_mode="Markdown"
+            )
+            return
+
+        # ── FAKE DETECTION ────────────────────────────────────
+        if data.get("is_fake"):
+            fake_reason = data.get("fake_reason", "Screenshot appears manipulated")
+            bot.reply_to(message,
+                f"🚨 *Fake Payment Detected!*\n\n"
+                f"Reason: {fake_reason}\n\n"
+                f"Please send a genuine payment screenshot.",
+                parse_mode="Markdown"
+            )
+            bot.send_message(OWNER_CHAT_ID,
+                f"🚨 *Fake Payment Attempt!*\n\n"
+                f"👤 User: {message.from_user.first_name} (@{message.from_user.username or 'N/A'})\n"
+                f"🕐 Time: {now_ist()}\n"
+                f"⚠️ Reason: {fake_reason}",
+                parse_mode="Markdown"
+            )
+            return
+
+        # ── 24 HOUR CHECK ─────────────────────────────────────
+        if data.get("within_24_hours") == False:
+            bot.reply_to(message,
+                "⏰ *Payment screenshot is older than 24 hours.*\n\n"
+                "Please make a fresh payment and send the new screenshot.",
+                parse_mode="Markdown"
+            )
+            return
+
+        txn_id      = data.get("transaction_id", "N/A")
+        amount_paid = str(data.get("amount", "N/A"))
+        recipient   = str(data.get("recipient", "N/A")).strip()
+        status      = data.get("status", "UNKNOWN")
+        pay_date    = data.get("payment_date", "N/A")
+        pay_time    = data.get("payment_time", "N/A")
+        expected    = pending_payments[user_id]["amount"]
+        plan_label  = pending_payments[user_id]["plan"]
+        plan_key    = pending_payments[user_id]["plan_key"]
+        submitted_at = now_ist()
+
+        # ── VERIFY RECIPIENT ──────────────────────────────────
+        upi_id = bot_settings.get("upi_id", "") or ""
+        verified_names = bot_settings.get("verified_names", [])
+        recipient_lower = recipient.lower()
+
+        upi_match = bool(upi_id) and upi_id.lower() in recipient_lower
+        name_match = any(n.lower() in recipient_lower for n in verified_names if n)
+
+        # ── VERIFY EXACT AMOUNT ───────────────────────────────
+        try:
+            paid = float(str(amount_paid).replace(",", "").strip())
+            expected_float = float(str(expected))
+            amount_match = abs(paid - expected_float) < 0.01
+        except:
+            amount_match = False
+
+        # ── AUTO APPROVE ONLY IF ALL CONDITIONS MATCH ────────
+        auto_verified = (upi_match or name_match) and status == "SUCCESS" and amount_match
+
+        bot.reply_to(message,
+            f"✅ *Screenshot Scanned!*\n\n"
+            f"📋 *Transaction Details:*\n"
+            f"• Transaction ID: `{txn_id}`\n"
+            f"• Amount Paid: ₹{amount_paid}\n"
+            f"• Status: {status}\n"
+            f"• Payment Date: {pay_date}\n"
+            f"• Payment Time: {pay_time}\n\n"
+            f"⏳ Processing your order...",
+            parse_mode="Markdown"
+        )
+
+        review_key = str(uuid.uuid4())[:8]
+        pending_reviews[review_key] = {
+            "user_id":      user_id,
+            "user_name":    message.from_user.first_name,
+            "username":     message.from_user.username or "N/A",
+            "amount_paid":  amount_paid,
+            "expected":     expected,
+            "txn_id":       txn_id,
+            "recipient":    recipient,
+            "status":       status,
+            "pay_date":     pay_date,
+            "pay_time":     pay_time,
+            "plan":         plan_label,
+            "plan_key":     plan_key,
+            "submitted_at": submitted_at,
+            "file_id":      photo.file_id
+        }
+
+        owner_caption = (
+            f"🔔 *New Payment — {'✅ Auto Approved' if auto_verified else '⚠️ Manual Review'}*\n\n"
+            f"👤 User: {message.from_user.first_name} (@{message.from_user.username or 'N/A'})\n"
+            f"📦 Plan: {plan_label}\n"
+            f"💰 Expected: ₹{expected}\n"
+            f"💸 Paid: ₹{amount_paid}\n"
+            f"🏦 Paid To: {recipient}\n"
+            f"🔖 Txn ID: `{txn_id}`\n"
+            f"📊 Status: {status}\n"
+            f"📅 Payment Date: {pay_date}\n"
+            f"🕐 Payment Time: {pay_time}\n"
+            f"🕐 Submitted At: {submitted_at}\n"
+            f"🔑 Key: `{review_key}`"
+        )
+
+        if auto_verified:
+            grant_premium(user_id, plan_label, plan_key, review_key,
+                username=message.from_user.username)
+            bot.send_photo(OWNER_CHAT_ID, photo.file_id,
+                caption=owner_caption, parse_mode="Markdown")
+        else:
+            if not (upi_match or name_match):
+                reason = "Recipient not verified"
+            elif not amount_match:
+                reason = f"Amount mismatch — Expected ₹{expected}, Paid ₹{amount_paid}"
+            elif status != "SUCCESS":
+                reason = f"Payment status: {status}"
+            else:
+                reason = "Manual review required"
+
+            markup = types.InlineKeyboardMarkup()
+            markup.row(
+                types.InlineKeyboardButton("✅ Approve", callback_data=f"approve_{review_key}"),
+                types.InlineKeyboardButton("❌ Decline", callback_data=f"decline_{review_key}")
+            )
+            bot.send_photo(OWNER_CHAT_ID, photo.file_id,
+                caption=f"{owner_caption}\n⚠️ Reason: {reason}",
+                parse_mode="Markdown", reply_markup=markup)
+            bot.send_message(user_id,
+                "⏳ *Your order is under review.*\n\nWe'll confirm shortly.",
+                parse_mode="Markdown")
+
+    except Exception as e:
+        print(f"SCREENSHOT ERROR: {str(e)}")
+        bot.reply_to(message, f"❌ Error scanning screenshot: {str(e)}")
+
+# ── NON-PHOTO ─────────────────────────────────────────────────
+@bot.message_handler(content_types=["document", "video", "audio", "sticker", "voice"])
+def handle_non_photo(message):
+    try:
+        if message.from_user.id in pending_payments:
+            bot.reply_to(message,
+                "⚠️ Please send a *payment screenshot* (image only).",
+                parse_mode="Markdown")
+    except Exception as e:
+        print(f"NON PHOTO ERROR: {str(e)}")
+
+# ══════════════════════════════════════════════════════════════
+# GRANT ACCESS — generates one-time channel invite + tracks expiry
+# ══════════════════════════════════════════════════════════════
+def grant_premium(user_id, plan
