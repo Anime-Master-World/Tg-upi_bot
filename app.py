@@ -13,8 +13,8 @@ OWNER_CHAT_ID = os.environ["OWNER_CHAT_ID"]
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 PREMIUM_CHANNEL_ID = os.environ.get("PREMIUM_CHANNEL_ID", "")
 
-YOUR_UPI_ID = "veerakumarchellaiyan125-1@okaxis"
-VERIFIED_UPI_IDS = ["nitheshkumar05@fam", "veerakumarchellaiyan125-1@okaxis"]
+YOUR_UPI_ID = "nitheshkumar 05@fam"
+VERIFIED_UPI_IDS = ["nitheshkumar05@fam"]
 VERIFIED_NAMES = ["nitheshkumar", "nithesh kumar", "nithesh"]
 
 bot = telebot.TeleBot(BOT_TOKEN)
